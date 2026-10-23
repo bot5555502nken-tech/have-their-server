@@ -2,14 +2,12 @@ const { WebSocketServer } = require('ws');
 const http = require('http');
 
 const PORT = process.env.PORT || 8080;
-
 const httpServer = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('HAVE THEIR WSS server is running');
 });
 
 const wss = new WebSocketServer({ server: httpServer });
-
 const rooms = new Map();
 const clients = new Set();
 
@@ -23,9 +21,17 @@ function broadcast(packet, exceptWs) {
     }
 }
 
+// Функция для рассылки онлайна
+function broadcastOnlineCount() {
+    broadcast({ __mt: 1, type: 'online_count', count: clients.size, senderId: 'server' });
+}
+
 wss.on('connection', (ws) => {
     clients.add(ws);
     ws.roomId = null;
+    
+    // Когда кто-то заходит, рассылаем новый онлайн
+    broadcastOnlineCount();
 
     ws.on('message', (buf) => {
         let d;
@@ -40,20 +46,14 @@ wss.on('connection', (ws) => {
                     if (now - r.updated > 15000) { rooms.delete(id); continue; }
                     list.push({ id, name: r.name, players: r.players.size, started: r.started });
                 }
-                ws.send(JSON.stringify({
-                    __mt: 1, type: 'rooms_list',
-                    rooms: list, senderId: 'server', t: now
-                }));
+                ws.send(JSON.stringify({ __mt: 1, type: 'rooms_list', rooms: list, senderId: 'server', t: now }));
                 break;
             }
             case 'create_room':
             case 'announce_room': {
                 if (!d.roomId) break;
                 let r = rooms.get(d.roomId);
-                if (!r) {
-                    r = { name: d.roomName || 'Комната', players: new Set(), updated: Date.now(), started: false };
-                    rooms.set(d.roomId, r);
-                }
+                if (!r) { r = { name: d.roomName || 'Комната', players: new Set(), updated: Date.now(), started: false }; rooms.set(d.roomId, r); }
                 r.name = d.roomName || r.name;
                 r.updated = Date.now();
                 if (typeof d.started === 'boolean') r.started = d.started;
@@ -64,14 +64,8 @@ wss.on('connection', (ws) => {
             }
             case 'join_room': {
                 const r = rooms.get(d.roomId);
-                if (!r) {
-                    ws.send(JSON.stringify({ __mt: 1, type: 'error', message: 'Комната не найдена', senderId: 'server' }));
-                    break;
-                }
-                if (r.players.size >= 5) {
-                    ws.send(JSON.stringify({ __mt: 1, type: 'error', message: 'Комната заполнена', senderId: 'server' }));
-                    break;
-                }
+                if (!r) { ws.send(JSON.stringify({ __mt: 1, type: 'error', message: 'Комната не найдена', senderId: 'server' })); break; }
+                if (r.players.size >= 5) { ws.send(JSON.stringify({ __mt: 1, type: 'error', message: 'Комната заполнена', senderId: 'server' })); break; }
                 r.players.add(ws);
                 ws.roomId = d.roomId;
                 r.updated = Date.now();
@@ -98,6 +92,9 @@ wss.on('connection', (ws) => {
 
     ws.on('close', () => {
         clients.delete(ws);
+        // Когда кто-то выходит, рассылаем новый онлайн
+        broadcastOnlineCount();
+        
         if (!ws.roomId) return;
         const id = ws.roomId;
         const r = rooms.get(id);
@@ -109,6 +106,4 @@ wss.on('connection', (ws) => {
     });
 });
 
-httpServer.listen(PORT, () => {
-    console.log('WSS server on port', PORT);
-});
+httpServer.listen(PORT, () => { console.log('WSS server on port', PORT); });
